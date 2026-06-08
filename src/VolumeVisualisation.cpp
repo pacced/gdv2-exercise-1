@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+
 #include <tuple>
 #include <vector>
 
@@ -14,6 +15,16 @@
 #include "gris/mc_look_up.h"
 
 constexpr float BARTH_W = 1.0f;
+
+struct TupleHash {
+    std::size_t operator()(const std::tuple<int,int,int>& k) const {
+        std::size_t seed = 0;
+        seed ^= std::hash<int>{}(std::get<0>(k)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int>{}(std::get<1>(k)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int>{}(std::get<2>(k)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+};
 
 int calculateIndex(const glm::ivec3& grid_position, const glm::ivec3& dimensions) {
     assert(grid_position.x < dimensions.x);
@@ -871,7 +882,7 @@ void VolumeVisualisation::calculateNormals() {
     }
 }
 
-void VolumeVisualisation::calculateNormalsFiniteDifferences(){
+void VolumeVisualisation::calculateNormalsFiniteDifferences() {
     auto dim = m_volume_data.dimensions;
 
     const int stepX = 1;
@@ -944,7 +955,7 @@ void VolumeVisualisation::calculateNormalsFiniteDifferences(){
     }
 }
 
-void VolumeVisualisation::calculateNormalsAnalytical(){
+void VolumeVisualisation::calculateNormalsAnalytical() {
     const float phi = 1.61803398875f;
     const float sqPhi = phi * phi;
 
@@ -986,51 +997,62 @@ void VolumeVisualisation::calculateNormalsAnalytical(){
 
 void VolumeVisualisation::snapToGrid(float distance) {
     // DONE(4.5):
-
-    float threshold = distance * distance;
-
-    for(glm::vec3& v : m_mesh.vertices) {
-        glm::vec3 gridPoint = glm::round(v);
-        glm::vec3 diff = v - gridPoint;
-        float sqrDistance = glm::dot(diff, diff);
-
-        if(sqrDistance < threshold) {
-            v = gridPoint;
-        }
+    if(m_mesh.vertices.size() == 0) {
+        return;
     }
 
-    auto approxEqual = [](const glm::vec3 x, const glm::vec3 y) {
-        const float epsilon = 1e-8f;
-
+    auto approxEqual = [](const glm::vec3 x, const glm::vec3 y, const float threshold) {
         glm::vec3 diff = x - y;
         float sqrDistance = glm::dot(diff, diff);
 
-        return sqrDistance < epsilon;
+        return sqrDistance < threshold;
     };
 
-    std::erase_if(m_mesh.triangles, [&](const glm::ivec3& t) {
-        const glm::vec3& v0 = m_mesh.vertices[t.x];
-        const glm::vec3& v1 = m_mesh.vertices[t.y];
-        const glm::vec3& v2 = m_mesh.vertices[t.z];
+    const float threshold = distance * distance;
 
-        return approxEqual(v0, v1) || approxEqual(v1, v2) || approxEqual(v0, v2);
-    });
+    std::unordered_map<std::tuple<int, int, int>, int, TupleHash> grid;
+    std::vector<int> indexRemap(m_mesh.vertices.size());
+    std::vector<glm::vec3> newVertices;
+
+    for(int i = 0; i < m_mesh.vertices.size(); ++i) {
+        const glm::vec3 v = m_mesh.vertices[i];
+        const glm::vec3 nearestGridPoint = glm::round(v);
+
+        // If vertex is approximately equal to the nearest grid point, check if another vertex was snapped to the same point;
+        // if that's the case, do not add this as a new vertex and instead remap index of this vertex to the index of the previously snapped vertex
+        // If vertex is not approximately equal to the nearest grid point, directly add it as a new vertex
+        if(approxEqual(nearestGridPoint, v, threshold)) {
+            std::tuple<int, int, int> key = { (int)nearestGridPoint.x, (int)nearestGridPoint.y, (int)nearestGridPoint.z };
+            auto it = grid.find(key);
+
+            if(it != grid.end()){
+                int existentVertexIndex = it->second;
+                indexRemap[i] = existentVertexIndex;
+            } else {
+                int newIndex = newVertices.size();
+                grid[key] = newIndex;
+                newVertices.push_back(nearestGridPoint);
+                indexRemap[i] = newIndex;
+            }
+        } else {
+            indexRemap[i] = newVertices.size();
+            newVertices.push_back(v);
+        }
+    }
+
+    for(glm::ivec3& t : m_mesh.triangles){
+        t.x = indexRemap[t.x];
+        t.y = indexRemap[t.y];
+        t.z = indexRemap[t.z];
+    }
+
+    m_mesh.vertices = newVertices;
 }
 
 void VolumeVisualisation::cleanUpTriangleSoup() {
     // DONE(4.5):
     const float epsilon = 0.01f;
     const float sqEpsilon = epsilon * epsilon;
-
-    struct TupleHash {
-        std::size_t operator()(const std::tuple<int,int,int>& k) const {
-            std::size_t seed = 0;
-            seed ^= std::hash<int>{}(std::get<0>(k)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            seed ^= std::hash<int>{}(std::get<1>(k)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            seed ^= std::hash<int>{}(std::get<2>(k)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            return seed;
-        }
-    };
 
     std::unordered_map<std::tuple<int, int, int>, int, TupleHash> grid;
     std::vector<int> indexRemap(m_mesh.vertices.size());
