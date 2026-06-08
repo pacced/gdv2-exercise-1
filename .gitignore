@@ -1,4 +1,7 @@
-build/
 .cache/
-
 .git/
+
+build/
+
+data/*
+!data/.gitkeep
