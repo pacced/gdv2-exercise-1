@@ -11,10 +11,10 @@ class SettingsWidget: public QDockWidget, Ui::SettingsWidget {
     Q_OBJECT
 
 public:
-    explicit SettingsWidget(bool render_mesh, bool render_wireframe, bool render_normals, bool render_volume, QWidget* parent = nullptr);
+    explicit SettingsWidget(bool render_mesh, bool render_wireframe, bool render_normals, bool render_volume, bool render_octree, QWidget* parent = nullptr);
 
 signals:
-    void onRenderChecksChanged(bool draw_mesh, bool draw_wireframe, bool draw_normals, bool draw_volume);
+    void onRenderChecksChanged(bool draw_mesh, bool draw_wireframe, bool draw_normals, bool draw_volume, bool draw_octree);
     void onGenerateTriviate(
         glm::ivec3 dimensions,
         bool dual,

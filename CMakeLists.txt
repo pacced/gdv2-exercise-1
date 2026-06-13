@@ -20,6 +20,8 @@ FetchContent_MakeAvailable(glm)
 
 find_package(Qt6 REQUIRED COMPONENTS OpenGL OpenGLWidgets Widgets)
 
+find_package(OpenMP REQUIRED)
+
 set(${PROJECT_NAME}_RESOURCES
     "data/bonsai(size=256x256x256,spacing=1x1x1).raw"
     "data/neghip(size=64x64x64,spacing=1x1x1).raw"
@@ -38,6 +40,9 @@ set(PROJECT_HEADERS
     include/gris/mc_look_up.h
     include/VolumeVisualisation.h
     include/ui/LoadDialog.h
+
+    include/OctreeNode.h
+    include/TupleHash.h
 )
 
 set(PROJECT_SOURCES
@@ -82,6 +87,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Qt6::OpenGLWidgets
     Qt6::Widgets
 )
+
+target_link_libraries(${PROJECT_NAME} PRIVATE OpenMP::OpenMP_CXX)
 
 foreach(${PROJECT_NAME}_RESOURCE ${${PROJECT_NAME}_RESOURCES})
     configure_file(${${PROJECT_NAME}_RESOURCE} ${${PROJECT_NAME}_RESOURCE} COPYONLY)

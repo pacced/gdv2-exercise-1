@@ -6,35 +6,77 @@
 #include <iterator>
 
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "glm/fwd.hpp"
 #include "glm/geometric.hpp"
 #include "gris/GridCell.h"
 #include "gris/TriangeMesh.h"
+#include "gris/VolumeData.h"
 #include "gris/mc_look_up.h"
+
+#include "TupleHash.h"
+#include "OctreeNode.h"
 
 constexpr float BARTH_W = 1.0f;
 
-struct TupleHash {
-    std::size_t operator()(const std::tuple<int,int,int>& k) const {
-        std::size_t seed = 0;
-        seed ^= std::hash<int>{}(std::get<0>(k)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-        seed ^= std::hash<int>{}(std::get<1>(k)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-        seed ^= std::hash<int>{}(std::get<2>(k)) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-        return seed;
-    }
-};
-
-int calculateIndex(const glm::ivec3& grid_position, const glm::ivec3& dimensions) {
-    assert(grid_position.x < dimensions.x);
-    assert(grid_position.y < dimensions.y);
-    assert(grid_position.z < dimensions.z);
-    return grid_position.x + grid_position.y * dimensions.x + grid_position.z * dimensions.x * dimensions.y;
-};
-
 VolumeVisualisation::VolumeVisualisation(const gris::BoundingBox& bounding_box):
-    m_bounding_box(bounding_box) {
+m_bounding_box(bounding_box) {
+}
+
+int VolumeVisualisation::getFlatIndex(const int x, const int y, const int z) const {
+    const glm::ivec3 dimensions = m_volume_data.dimensions;
+
+    assert(x < dimensions.x);
+    assert(y < dimensions.y);
+    assert(z < dimensions.z);
+
+    const int stepY = dimensions.x;
+    const int stepZ = stepY * dimensions.y;
+
+    return x + y * stepY + z * stepZ;
+};
+
+float VolumeVisualisation::getDensity(int flatIndex) const {
+    return m_volume_data.values[flatIndex];
+}
+
+float VolumeVisualisation::getDensity(int x, int y, int z) const {
+    return m_volume_data.values[getFlatIndex(x, y, z)];
+}
+
+bool VolumeVisualisation::checkInside(int flatIndex) const {
+    return getDensity(flatIndex) > m_iso_value;
+}
+
+bool VolumeVisualisation::checkInside(int x, int y, int z) const {
+    return getDensity(x, y, z) > m_iso_value;
+}
+
+glm::vec3 VolumeVisualisation::edgeCutPosition(int x0, int y0, int z0, int x1, int y1, int z1) {
+    float d0 = getDensity(x0, y0, z0);
+    float d1 = getDensity(x1, y1, z1);;
+    float t = (m_iso_value - d0) / (d1 - d0);
+    return glm::mix(glm::vec3(x0, y0, z0), glm::vec3(x1, y1, z1), t);
+}
+
+glm::vec3 VolumeVisualisation::getEdgeCutByEdge(int x, int y, int z, int edge){
+    switch(edge) {
+        case gris::EDGE_0:  return edgeCutPosition(x    , y    , z    , x + 1, y    , z    );
+        case gris::EDGE_1:  return edgeCutPosition(x + 1, y    , z    , x + 1, y    , z + 1);
+        case gris::EDGE_2:  return edgeCutPosition(x + 1, y    , z + 1, x    , y    , z + 1);
+        case gris::EDGE_3:  return edgeCutPosition(x    , y    , z    , x    , y    , z + 1);
+        case gris::EDGE_4:  return edgeCutPosition(x    , y + 1, z    , x + 1, y + 1, z    );
+        case gris::EDGE_5:  return edgeCutPosition(x + 1, y + 1, z    , x + 1, y + 1, z + 1);
+        case gris::EDGE_6:  return edgeCutPosition(x + 1, y + 1, z + 1, x    , y + 1, z + 1);
+        case gris::EDGE_7:  return edgeCutPosition(x    , y + 1, z + 1, x    , y + 1, z    );
+        case gris::EDGE_8:  return edgeCutPosition(x    , y    , z    , x    , y + 1, z    );
+        case gris::EDGE_9:  return edgeCutPosition(x + 1, y    , z    , x + 1, y + 1, z    );
+        case gris::EDGE_10: return edgeCutPosition(x + 1, y    , z + 1, x + 1, y + 1, z + 1);
+        case gris::EDGE_11: return edgeCutPosition(x    , y    , z + 1, x    , y + 1, z + 1);
+        default: assert(false);
+    }
 }
 
 void VolumeVisualisation::generateTriviateVolumeData(const glm::ivec3& dimensions, const gris::BoundingBox& bounding_box) {
@@ -55,11 +97,6 @@ void VolumeVisualisation::generateTriviateVolumeData(const glm::ivec3& dimension
 
     const float w = BARTH_W;
     const float sqW = w * w;
-
-
-    int stepX = 1;
-    int stepY = stepX * dimensions.x;
-    int stepZ = stepY * dimensions.y;
 
     float scalingFactor = 8.0f / std::max(dimensions.x, std::max(dimensions.y, dimensions.z));
 
@@ -102,7 +139,6 @@ void VolumeVisualisation::loadRawVolumeData(const std::string& path, const glm::
     // we know the bit depth (8 bits by now), so all that's left is to cast each char to a float between [0,1)
     for(int i = 0; i < dimensions.x * dimensions.y * dimensions.z; ++i) {
         float v = static_cast<unsigned char>(in.get()) / 256.0f;
-        ;
         m_volume_data.values[i] = v;
     }
 }
@@ -116,8 +152,7 @@ void VolumeVisualisation::generateMesh(float iso_value, bool dual, bool grid_sna
     if(dual) {
         dualMarchingCubes();
     } else {
-        // marchingCubes();
-        marchingCubes2();
+        marchingCubesOctree();
     }
 
     clock_t stop = clock();
@@ -142,6 +177,7 @@ void VolumeVisualisation::generateMesh(float iso_value, bool dual, bool grid_sna
         stop = clock();
         std::cout << "Mesh Optimization finised after " << static_cast<float>(stop - start) / CLOCKS_PER_SEC << " seconds" << std::endl;
     }
+
     calculateNormals();
 
     std::cout << "Resulting Mesh has: " << m_mesh.vertices.size() << " vertices, " << m_mesh.triangles.size() << " triangles.\n"
@@ -158,26 +194,31 @@ void VolumeVisualisation::drawMesh(QOpenGLFunctions_2_1* f) const {
                         static_cast<float>(m_volume_data.dimensions.z - 1),
                     };
 
+
+    glm::vec4 color1 = {0.2f, 0.2f, 0.5f, 1.f};
+    glm::vec4 color2 = {0.4f, 0.9f, 0.2f, 1.f};
+
     f->glBegin(GL_TRIANGLES);
         for(const glm::ivec3& t : m_mesh.triangles) {
-            // Triangles are wound backwards for some reason
-            glm::vec3 v0 = min + delta * m_mesh.vertices[t.z];
+            glm::vec3 v0 = min + delta * m_mesh.vertices[t.x];
             glm::vec3 v1 = min + delta * m_mesh.vertices[t.y];
-            glm::vec3 v2 = min + delta * m_mesh.vertices[t.x];
+            glm::vec3 v2 = min + delta * m_mesh.vertices[t.z];
 
-            glm::vec3 n0 = m_mesh.normals[t.z];
+            glm::vec3 n0 = m_mesh.normals[t.x];
             glm::vec3 n1 = m_mesh.normals[t.y];
-            glm::vec3 n2 = m_mesh.normals[t.x];
+            glm::vec3 n2 = m_mesh.normals[t.z];
 
+            f->glColor3fv(&color1.x);
             f->glNormal3fv(&n0.x);
             f->glVertex3fv(&v0.x);
-
 
             f->glNormal3fv(&n1.x);
             f->glVertex3fv(&v1.x);
 
             f->glNormal3fv(&n2.x);
             f->glVertex3fv(&v2.x);
+
+            // std::swap(color1, color2);
         }
     f->glEnd();
 }
@@ -216,14 +257,13 @@ void VolumeVisualisation::drawVolumeData(QOpenGLFunctions_2_1* f) const {
             static_cast<float>(m_volume_data.dimensions.y - 1),
             static_cast<float>(m_volume_data.dimensions.z - 1),
         };
-    float radius = glm::min(delta.x, glm::min(delta.y, delta.z)) / 4.f;
 
     f->glPointSize(6.0f);
     f->glBegin(GL_POINTS);
     for(int x = 0; x < m_volume_data.dimensions.x; x++) {
         for(int y = 0; y < m_volume_data.dimensions.y; y++) {
             for(int z = 0; z < m_volume_data.dimensions.z; z++) {
-                if(m_volume_data.values[calculateIndex({x, y, z}, m_volume_data.dimensions)] >= m_iso_value) {
+                if(checkInside(x, y, z)) {
                     glm::vec3 point = min + delta * glm::vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
                     f->glVertex3fv(reinterpret_cast<const float*>(&point));
                 }
@@ -231,6 +271,157 @@ void VolumeVisualisation::drawVolumeData(QOpenGLFunctions_2_1* f) const {
         }
     }
     f->glEnd();
+}
+
+void VolumeVisualisation::drawOctree(QOpenGLFunctions_2_1* f) const {
+    glm::vec3 min = m_bounding_box.min;
+    glm::vec3 delta = (m_bounding_box.max - m_bounding_box.min) /
+        glm::vec3{
+            static_cast<float>(m_volume_data.dimensions.x - 1),
+            static_cast<float>(m_volume_data.dimensions.y - 1),
+            static_cast<float>(m_volume_data.dimensions.z - 1),
+        };
+
+    f->glDisable(GL_LIGHTING);
+
+    f->glEnable(GL_BLEND);
+    f->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    f->glEnable(GL_CULL_FACE);
+    f->glCullFace(GL_BACK);
+
+    f->glEnable(GL_POLYGON_OFFSET_FILL);
+    f->glPolygonOffset(1.0f, 1.0f);
+
+    f->glBegin(GL_TRIANGLES);
+    f->glColor4f(0.0f, 0.9f, 0.2f, 0.4f);
+    for(const OctreeNode& node : m_octree) {
+        if(node.type == EMPTY || node.type == EMPTY_LEAF || node.type == POPULATED) {
+            continue;
+        }
+
+        glm::vec3 start = node.regionStart;
+        glm::vec3 end = node.regionEnd;
+
+        start = min + delta * start;
+        end = min + delta * end;
+
+        // FRONT
+        f->glVertex3f(start.x, start.y, end.z);
+        f->glVertex3f(end.x, start.y, end.z);
+        f->glVertex3f(end.x, end.y, end.z);
+
+        f->glVertex3f(start.x, start.y, end.z);
+        f->glVertex3f(end.x, end.y, end.z);
+        f->glVertex3f(start.x, end.y, end.z);
+
+        // BACK
+        f->glVertex3f(end.x, start.y, start.z);
+        f->glVertex3f(start.x, start.y, start.z);
+        f->glVertex3f(start.x, end.y, start.z);
+
+        f->glVertex3f(end.x, start.y, start.z);
+        f->glVertex3f(start.x, end.y, start.z);
+        f->glVertex3f(end.x, end.y, start.z);
+
+        // LEFT
+        f->glVertex3f(start.x, start.y, start.z);
+        f->glVertex3f(start.x, start.y, end.z);
+        f->glVertex3f(start.x, end.y, end.z);
+
+        f->glVertex3f(start.x, start.y, start.z);
+        f->glVertex3f(start.x, end.y, end.z);
+        f->glVertex3f(start.x, end.y, start.z);
+
+        // RIGHT
+        f->glVertex3f(end.x, start.y, end.z);
+        f->glVertex3f(end.x, start.y, start.z);
+        f->glVertex3f(end.x, end.y, start.z);
+
+        f->glVertex3f(end.x, start.y, end.z);
+        f->glVertex3f(end.x, end.y, start.z);
+        f->glVertex3f(end.x, end.y, end.z);
+
+        // TOP
+        f->glVertex3f(start.x, end.y, end.z);
+        f->glVertex3f(end.x, end.y, end.z);
+        f->glVertex3f(end.x, end.y, start.z);
+
+        f->glVertex3f(start.x, end.y, end.z);
+        f->glVertex3f(end.x, end.y, start.z);
+        f->glVertex3f(start.x, end.y, start.z);
+
+        // BOTTOM
+        f->glVertex3f(start.x, start.y, start.z);
+        f->glVertex3f(end.x, start.y, start.z);
+        f->glVertex3f(end.x, start.y, end.z);
+
+        f->glVertex3f(start.x, start.y, start.z);
+        f->glVertex3f(end.x, start.y, end.z);
+        f->glVertex3f(start.x, start.y, end.z);
+    }
+    f->glEnd();
+
+    // Wireframe
+    f->glBegin(GL_LINES);
+    for (const OctreeNode& node : m_octree) {
+        if(node.type == EMPTY_LEAF || node.type == EMPTY) {
+            continue;
+        }
+
+        if(node.type == POPULATED_LEAF) {
+            f->glColor4f(0.0f, 0.0f, 0.0f, 0.9f);
+        } else {
+            f->glColor4f(0.0f, 0.0f, 0.0f, 0.4f);
+        }
+
+        glm::vec3 start = node.regionStart;
+        glm::vec3 end = node.regionEnd;
+
+        start = min + delta * start;
+        end = min + delta * end;
+
+        f->glVertex3f(start.x, start.y, start.z);
+        f->glVertex3f(end.x, start.y, start.z);
+
+        f->glVertex3f(end.x, start.y, start.z);
+        f->glVertex3f(end.x, start.y, end.z);
+
+        f->glVertex3f(end.x, start.y, end.z);
+        f->glVertex3f(start.x, start.y, end.z);
+
+        f->glVertex3f(start.x, start.y, end.z);
+        f->glVertex3f(start.x, start.y, start.z);
+
+        f->glVertex3f(start.x, end.y, start.z);
+        f->glVertex3f(end.x, end.y, start.z);
+
+        f->glVertex3f(end.x, end.y, start.z);
+        f->glVertex3f(end.x, end.y, end.z);
+
+        f->glVertex3f(end.x, end.y, end.z);
+        f->glVertex3f(start.x, end.y, end.z);
+
+        f->glVertex3f(start.x, end.y, end.z);
+        f->glVertex3f(start.x, end.y, start.z);
+
+        f->glVertex3f(start.x, start.y, start.z);
+        f->glVertex3f(start.x, end.y, start.z);
+
+        f->glVertex3f(end.x, start.y, start.z);
+        f->glVertex3f(end.x, end.y, start.z);
+
+        f->glVertex3f(end.x, start.y, end.z);
+        f->glVertex3f(end.x, end.y, end.z);
+
+        f->glVertex3f(start.x, start.y, end.z);
+        f->glVertex3f(start.x, end.y, end.z);
+    }
+    f->glEnd();
+
+    f->glDisable(GL_CULL_FACE);
+    f->glDisable(GL_BLEND);
+    f->glDisable(GL_POLYGON_OFFSET_FILL);
 }
 
 gris::TriangleMesh VolumeVisualisation::poligonize(const gris::GridCell& grid_cell, float iso_value) {
@@ -256,6 +447,7 @@ gris::TriangleMesh VolumeVisualisation::poligonize(const gris::GridCell& grid_ce
             result.vertices.size() + 1,
             result.vertices.size() + 2,
         });
+
         for(int edge : {triangle.x, triangle.y, triangle.z}) {
             float value_a;
             glm::vec3 corner_a;
@@ -343,24 +535,181 @@ gris::TriangleMesh VolumeVisualisation::poligonize(const gris::GridCell& grid_ce
     return result;
 }
 
-void VolumeVisualisation::marchingCubes2() {
+std::tuple<int, float, float> VolumeVisualisation::buildNode(const glm::ivec3 start, const glm::ivec3 end) {
+    const glm::ivec3 span = end - start;
+
+    if(span.x <= 0 || span.y <= 0 || span.z <= 0) {
+        return { -1, 0.0f, 0.0f };
+    }
+
+    OctreeNode node;
+    node.regionStart = start;
+    node.regionEnd = end;
+    node.childIndices.fill(-1);
+
+    auto dim = m_volume_data.dimensions;
+
+    const int minSize = 8;
+    // todo make it so that something like 1x12x24 is still split
+    if(span.x <= minSize && span.y <= minSize && span.z <= minSize) {
+        // Leaf, do not reduce anymore
+
+        float min = std::numeric_limits<float>::max();
+        float max = std::numeric_limits<float>::lowest();
+
+        for(int z = start.z; z <= end.z; ++z) {
+            for(int y = start.y; y <= end.y; ++y) {
+                for(int x = start.x; x <= end.x; ++x) {
+                    float gridPointValue = getDensity(x, y, z);
+
+                    min = std::min(min, gridPointValue);
+                    max = std::max(max, gridPointValue);
+                }
+            }
+        }
+
+        node.minValue = min;
+        node.maxValue = max;
+
+        // Does not result in a surface, can prune
+        if(max < m_iso_value || min > m_iso_value) {
+            node.type = EMPTY_LEAF;
+            m_octree.push_back(node);
+            return { -2, min, max };
+        }
+
+        int index = m_octree.size();
+        node.type = POPULATED_LEAF;
+        m_octree.push_back(node);
+        return { index, min, max };
+    }
+
+
+    const glm::ivec3 middle = (start + end) / 2;
+
+    float min = std::numeric_limits<float>::max();
+    float max = std::numeric_limits<float>::lowest();
+
+    bool anyValidChild = false;
+    for(int octant = 0; octant < 8; ++octant) {
+        glm::ivec3 childStart;
+        glm::ivec3 childEnd;
+
+        childStart.x = (octant & 1) ? middle.x : start.x;
+        childEnd.x   = (octant & 1) ? end.x    : middle.x;
+
+        childStart.y = (octant & 2) ? middle.y : start.y;
+        childEnd.y   = (octant & 2) ? end.y    : middle.y;
+
+        childStart.z = (octant & 4) ? middle.z : start.z;
+        childEnd.z   = (octant & 4) ? end.z    : middle.z;
+
+
+        std::tuple<int, float, float> childNode = buildNode(childStart, childEnd);
+
+        int childIndex = std::get<0>(childNode);
+        float childMin = std::get<1>(childNode);
+        float childMax = std::get<2>(childNode);
+
+        node.childIndices[octant] = childIndex;
+
+        min = std::min(min, childMin);
+        max = std::max(max, childMax);
+
+        if(childIndex >= 0) {
+            anyValidChild = true;
+        }
+    }
+
+    node.minValue = min;
+    node.maxValue = max;
+
+    if(!anyValidChild || (max < m_iso_value || min > m_iso_value)) {
+        node.type = EMPTY;
+        m_octree.push_back(node);
+        return { -2, min, max };
+    }
+
+    node.type = POPULATED;
+
+    int selfIndex = m_octree.size();
+    m_octree.push_back(node);
+
+    return { selfIndex, min, max };
+}
+void VolumeVisualisation::buildOctree() {
+    m_octree.clear();
+
+    auto dim = m_volume_data.dimensions;
+
+    glm::ivec3 start = {0, 0, 0};
+    glm::ivec3 end = {dim.x - 1, dim.y - 1, dim.z - 1};
+
+    buildNode(start, end);
+}
+
+void VolumeVisualisation::marchingCubesOctree() {
     m_mesh.vertices.clear();
     m_mesh.normals.clear();
     m_mesh.triangles.clear();
 
     const gris::VolumeData& volumeData = m_volume_data;
-    float isoValue = m_iso_value;
     auto dim = volumeData.dimensions;
 
-    const int stepX = 1;
-    const int stepY = stepX * dim.x;
-    const int stepZ = stepY * dim.y;
+    buildOctree();
 
+    for(OctreeNode& node : m_octree) {
+        if(node.type != POPULATED_LEAF) {
+            continue;
+        }
+
+        const glm::ivec3 start = node.regionStart;
+        const glm::ivec3 end = node.regionEnd;
+
+        for(int z = start.z; z < end.z; ++z) {
+            for(int y = start.y; y < end.y; ++y) {
+                for(int x = start.x; x < end.x; ++x) {
+                    int caseIndex = 0;
+                    caseIndex |= (checkInside(x    , y    , z    ) ? gris::CORNER_0 : 0);
+                    caseIndex |= (checkInside(x + 1, y    , z    ) ? gris::CORNER_1 : 0);
+                    caseIndex |= (checkInside(x + 1, y    , z + 1) ? gris::CORNER_2 : 0);
+                    caseIndex |= (checkInside(x    , y    , z + 1) ? gris::CORNER_3 : 0);
+                    caseIndex |= (checkInside(x    , y + 1, z    ) ? gris::CORNER_4 : 0);
+                    caseIndex |= (checkInside(x + 1, y + 1, z    ) ? gris::CORNER_5 : 0);
+                    caseIndex |= (checkInside(x + 1, y + 1, z + 1) ? gris::CORNER_6 : 0);
+                    caseIndex |= (checkInside(x    , y + 1, z + 1) ? gris::CORNER_7 : 0);
+
+                    const glm::ivec3* triangles = gris::triangle_table[caseIndex];
+
+                    for (int i = 0; i < 5; ++i) {
+                        const int* triangleEdges = &triangles[i].x;
+                        if (triangleEdges[0] == -1) {
+                            break;
+                        }
+
+                        int baseVertexIdx = m_mesh.vertices.size();
+                        m_mesh.triangles.push_back({ baseVertexIdx, baseVertexIdx + 1, baseVertexIdx + 2 });
+
+                        for(int j = 0; j < 3; ++j) {
+                            int edge = triangleEdges[j];
+                            const glm::vec3 vertex = getEdgeCutByEdge(x, y, z, edge);
+
+                            m_mesh.vertices.push_back(vertex);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void VolumeVisualisation::marchingCubes2() {
+    m_mesh.vertices.clear();
+    m_mesh.normals.clear();
+    m_mesh.triangles.clear();
+
+    auto dim = m_volume_data.dimensions;
     size_t totalGridPoints = dim.x * dim.y * dim.z;
-
-    auto voxelIdx = [&](int x, int y, int z) {
-        return z * stepZ + y * stepY + x * stepX;
-    };
 
     std::vector<int> insideFlags(totalGridPoints);
     int flagIndex = 0;
@@ -368,8 +717,8 @@ void VolumeVisualisation::marchingCubes2() {
     // Classify grid points
     for(int z = 0; z < dim.z; ++z) {
         for(int y = 0; y < dim.y; ++y) {
-            for(int x = 0; x < dim.x; ++x, ++flagIndex) {
-                insideFlags[flagIndex] = (volumeData.values[flagIndex] < isoValue) ? 1 : 0;
+            for(int x = 0; x < dim.x; ++x) {
+                insideFlags[flagIndex] = (checkInside(x, y, z)) ? 1 : 0;
             }
         }
     }
@@ -386,16 +735,14 @@ void VolumeVisualisation::marchingCubes2() {
     for (int z = 0; z < dim.z; z++) {
         for (int y = 0; y < dim.y; y++) {
             for (int x = 0; x < dim.x - 1; x++) {
-                int i0 = voxelIdx(x    , y, z);
-                int i1 = voxelIdx(x + 1, y, z);
+                int i0 = getFlatIndex(x    , y, z);
+                int i1 = getFlatIndex(x + 1, y, z);
 
                 if (insideFlags[i0] != insideFlags[i1]) {
-                    float d0 = volumeData.values[i0];
-                    float d1 = volumeData.values[i1];
-                    float t = (isoValue - d0) / (d1 - d0);
+                    glm::vec3 edgeCut = edgeCutPosition(x, y, z, x + 1, y, z);
 
                     edgeX[i0] = verticesX.size();
-                    verticesX.push_back(glm::mix(glm::vec3(x, y, z), glm::vec3(x + 1, y, z), t));
+                    verticesX.push_back(edgeCut);
                 }
             }
         }
@@ -405,16 +752,14 @@ void VolumeVisualisation::marchingCubes2() {
     for (int z = 0; z < dim.z; z++) {
         for (int y = 0; y < dim.y - 1; y++) {
             for (int x = 0; x < dim.x; x++) {
-                int i0 = voxelIdx(x, y    , z);
-                int i1 = voxelIdx(x, y + 1, z);
+                int i0 = getFlatIndex(x, y    , z);
+                int i1 = getFlatIndex(x, y + 1, z);
 
                 if (insideFlags[i0] != insideFlags[i1]) {
-                    float d0 = volumeData.values[i0];
-                    float d1 = volumeData.values[i1];
-                    float t = (isoValue - d0) / (d1 - d0);
+                    glm::vec3 edgeCut = edgeCutPosition(x, y, z, x, y + 1, z);
 
                     edgeY[i0] = verticesY.size();
-                    verticesY.push_back(glm::mix(glm::vec3(x, y, z), glm::vec3(x, y + 1, z), t));
+                    verticesY.push_back(edgeCut);
                 }
             }
         }
@@ -424,16 +769,14 @@ void VolumeVisualisation::marchingCubes2() {
     for (int z = 0; z < dim.z - 1; z++) {
         for (int y = 0; y < dim.y; y++) {
             for (int x = 0; x < dim.x; x++) {
-                int i0 = voxelIdx(x, y, z    );
-                int i1 = voxelIdx(x, y, z + 1);
+                int i0 = getFlatIndex(x, y, z    );
+                int i1 = getFlatIndex(x, y, z + 1);
 
                 if (insideFlags[i0] != insideFlags[i1]) {
-                    float d0 = volumeData.values[i0];
-                    float d1 = volumeData.values[i1];
-                    float t = (isoValue - d0) / (d1 - d0);
+                    glm::vec3 edgeCut = edgeCutPosition(x, y, z, x, y, z + 1);
 
                     edgeZ[i0] = verticesZ.size();
-                    verticesZ.push_back(glm::mix(glm::vec3(x, y, z), glm::vec3(x, y, z + 1), t));
+                    verticesZ.push_back(edgeCut);
                 }
             }
         }
@@ -452,14 +795,14 @@ void VolumeVisualisation::marchingCubes2() {
         for (int y = 0; y < dim.y - 1; y++) {
             for (int x = 0; x < dim.x - 1; x++) {
                 int caseIdx = 0;
-                if (insideFlags[voxelIdx(x    , y    , z    )]) caseIdx |= gris::CORNER_0;
-                if (insideFlags[voxelIdx(x + 1, y    , z    )]) caseIdx |= gris::CORNER_1;
-                if (insideFlags[voxelIdx(x + 1, y    , z + 1)]) caseIdx |= gris::CORNER_2;
-                if (insideFlags[voxelIdx(x    , y    , z + 1)]) caseIdx |= gris::CORNER_3;
-                if (insideFlags[voxelIdx(x    , y + 1, z    )]) caseIdx |= gris::CORNER_4;
-                if (insideFlags[voxelIdx(x + 1, y + 1, z    )]) caseIdx |= gris::CORNER_5;
-                if (insideFlags[voxelIdx(x + 1, y + 1, z + 1)]) caseIdx |= gris::CORNER_6;
-                if (insideFlags[voxelIdx(x    , y + 1, z + 1)]) caseIdx |= gris::CORNER_7;
+                if (insideFlags[getFlatIndex(x    , y    , z    )]) caseIdx |= gris::CORNER_0;
+                if (insideFlags[getFlatIndex(x + 1, y    , z    )]) caseIdx |= gris::CORNER_1;
+                if (insideFlags[getFlatIndex(x + 1, y    , z + 1)]) caseIdx |= gris::CORNER_2;
+                if (insideFlags[getFlatIndex(x    , y    , z + 1)]) caseIdx |= gris::CORNER_3;
+                if (insideFlags[getFlatIndex(x    , y + 1, z    )]) caseIdx |= gris::CORNER_4;
+                if (insideFlags[getFlatIndex(x + 1, y + 1, z    )]) caseIdx |= gris::CORNER_5;
+                if (insideFlags[getFlatIndex(x + 1, y + 1, z + 1)]) caseIdx |= gris::CORNER_6;
+                if (insideFlags[getFlatIndex(x    , y + 1, z + 1)]) caseIdx |= gris::CORNER_7;
 
                 const glm::ivec3* triangles = gris::triangle_table[caseIdx];
 
@@ -472,18 +815,18 @@ void VolumeVisualisation::marchingCubes2() {
                     for (int j = 0; j < 3; j++) {
                         int edge = (&triangles[i].x)[j];
                         switch (edge) {
-                            case gris::EDGE_0:  indices[j] = offsetX + edgeX[voxelIdx(x    , y    , z    )]; break;
-                            case gris::EDGE_1:  indices[j] = offsetZ + edgeZ[voxelIdx(x + 1, y    , z    )]; break;
-                            case gris::EDGE_2:  indices[j] = offsetX + edgeX[voxelIdx(x    , y    , z + 1)]; break;
-                            case gris::EDGE_3:  indices[j] = offsetZ + edgeZ[voxelIdx(x    , y    , z    )]; break;
-                            case gris::EDGE_4:  indices[j] = offsetX + edgeX[voxelIdx(x    , y + 1, z    )]; break;
-                            case gris::EDGE_5:  indices[j] = offsetZ + edgeZ[voxelIdx(x + 1, y + 1, z    )]; break;
-                            case gris::EDGE_6:  indices[j] = offsetX + edgeX[voxelIdx(x    , y + 1, z + 1)]; break;
-                            case gris::EDGE_7:  indices[j] = offsetZ + edgeZ[voxelIdx(x    , y + 1, z    )]; break;
-                            case gris::EDGE_8:  indices[j] = offsetY + edgeY[voxelIdx(x    , y    , z    )]; break;
-                            case gris::EDGE_9:  indices[j] = offsetY + edgeY[voxelIdx(x + 1, y    , z    )]; break;
-                            case gris::EDGE_10: indices[j] = offsetY + edgeY[voxelIdx(x + 1, y    , z + 1)]; break;
-                            case gris::EDGE_11: indices[j] = offsetY + edgeY[voxelIdx(x    , y    , z + 1)]; break;
+                            case gris::EDGE_0:  indices[j] = offsetX + edgeX[getFlatIndex(x    , y    , z    )]; break;
+                            case gris::EDGE_1:  indices[j] = offsetZ + edgeZ[getFlatIndex(x + 1, y    , z    )]; break;
+                            case gris::EDGE_2:  indices[j] = offsetX + edgeX[getFlatIndex(x    , y    , z + 1)]; break;
+                            case gris::EDGE_3:  indices[j] = offsetZ + edgeZ[getFlatIndex(x    , y    , z    )]; break;
+                            case gris::EDGE_4:  indices[j] = offsetX + edgeX[getFlatIndex(x    , y + 1, z    )]; break;
+                            case gris::EDGE_5:  indices[j] = offsetZ + edgeZ[getFlatIndex(x + 1, y + 1, z    )]; break;
+                            case gris::EDGE_6:  indices[j] = offsetX + edgeX[getFlatIndex(x    , y + 1, z + 1)]; break;
+                            case gris::EDGE_7:  indices[j] = offsetZ + edgeZ[getFlatIndex(x    , y + 1, z    )]; break;
+                            case gris::EDGE_8:  indices[j] = offsetY + edgeY[getFlatIndex(x    , y    , z    )]; break;
+                            case gris::EDGE_9:  indices[j] = offsetY + edgeY[getFlatIndex(x + 1, y    , z    )]; break;
+                            case gris::EDGE_10: indices[j] = offsetY + edgeY[getFlatIndex(x + 1, y    , z + 1)]; break;
+                            case gris::EDGE_11: indices[j] = offsetY + edgeY[getFlatIndex(x    , y    , z + 1)]; break;
                             default: assert(false);
                         }
                     }
@@ -522,18 +865,16 @@ void VolumeVisualisation::marchingCubes() {
             int offsetYZ3 = offsetZ1 + offsetY1;
 
             for(int x = 0; x < dim.x - 1; ++x){
-                int voxelIndex = offsetZ0 + offsetY0 + x;
-
                 gris::GridCell voxel;
 
-                voxel.values[0] = m_volume_data.values[offsetYZ0 + x];
-                voxel.values[1] = m_volume_data.values[offsetYZ0 + x + stepX];
-                voxel.values[2] = m_volume_data.values[offsetYZ1 + x + stepX];
-                voxel.values[3] = m_volume_data.values[offsetYZ1 + x];
-                voxel.values[4] = m_volume_data.values[offsetYZ2 + x];
-                voxel.values[5] = m_volume_data.values[offsetYZ2 + x + stepX];
-                voxel.values[6] = m_volume_data.values[offsetYZ3 + x + stepX];
-                voxel.values[7] = m_volume_data.values[offsetYZ3 + x];
+                voxel.values[0] = getDensity(offsetYZ0 + x        );
+                voxel.values[1] = getDensity(offsetYZ0 + x + stepX);
+                voxel.values[2] = getDensity(offsetYZ1 + x + stepX);
+                voxel.values[3] = getDensity(offsetYZ1 + x        );
+                voxel.values[4] = getDensity(offsetYZ2 + x        );
+                voxel.values[5] = getDensity(offsetYZ2 + x + stepX);
+                voxel.values[6] = getDensity(offsetYZ3 + x + stepX);
+                voxel.values[7] = getDensity(offsetYZ3 + x        );
 
                 glm::vec3 min(
                     static_cast<float>(x),
@@ -561,9 +902,9 @@ void VolumeVisualisation::marchingCubes() {
 
                 for(const glm::ivec3& t : voxelMesh.triangles){
                     m_mesh.triangles.push_back({
-                        vertexOffset + t.x,
+                        vertexOffset + t.z,
                         vertexOffset + t.y,
-                        vertexOffset + t.z
+                        vertexOffset + t.x
                     });
                 }
             }
@@ -580,70 +921,30 @@ void VolumeVisualisation::dualMarchingCubes() {
     m_mesh.normals.clear();
     m_mesh.triangles.clear();
 
-    // TODO(4.4): implement dual marching cubes algorithm
+    // DONE(4.4): implement dual marching cubes algorithm
     const gris::VolumeData& volumeData = m_volume_data;
-    float isoValue = m_iso_value;
     auto dim = volumeData.dimensions;
 
-    const int stepX = 1;
-    const int stepY = stepX * dim.x;
-    const int stepZ = stepY * dim.y;
-
     const size_t totalGridPoints = dim.x * dim.y * dim.z;
-    // const size_t totalVoxels = (dim.x - 1) * (dim.y - 1) * (dim.z - 1);
-
-    auto voxelIdx = [&](int x, int y, int z) {
-        return z * stepZ + y * stepY + x * stepX;
-    };
 
     std::vector<std::array<int, 4>> centroidIndexGrid(totalGridPoints, {-1, -1, -1, -1});
     std::vector<std::array<int, 4>> edgeAssociationGrid(totalGridPoints, {0, 0, 0, 0});
     std::vector<glm::vec3> vertices;
 
-    auto inside = [&](int flatIndex) {
-        return m_volume_data.values[flatIndex] < isoValue;
-    };
-
-    // Edge interpolation helper
-    auto edgeCut = [&](int x0, int y0, int z0, int x1, int y1, int z1) {
-        float d0 = m_volume_data.values[voxelIdx(x0, y0, z0)];
-        float d1 = m_volume_data.values[voxelIdx(x1, y1, z1)];
-        float t = (isoValue - d0) / (d1 - d0);
-        return glm::mix(glm::vec3(x0, y0, z0), glm::vec3(x1, y1, z1), t);
-    };
-
-    auto getEdgeCut = [&](int x, int y, int z, int edge) {
-        switch(edge) {
-            case gris::EDGE_0:  return edgeCut(x    , y    , z    , x + 1, y    , z    );
-            case gris::EDGE_1:  return edgeCut(x + 1, y    , z    , x + 1, y    , z + 1);
-            case gris::EDGE_2:  return edgeCut(x + 1, y    , z + 1, x    , y    , z + 1);
-            case gris::EDGE_3:  return edgeCut(x    , y    , z    , x    , y    , z + 1);
-            case gris::EDGE_4:  return edgeCut(x    , y + 1, z    , x + 1, y + 1, z    );
-            case gris::EDGE_5:  return edgeCut(x + 1, y + 1, z    , x + 1, y + 1, z + 1);
-            case gris::EDGE_6:  return edgeCut(x + 1, y + 1, z + 1, x    , y + 1, z + 1);
-            case gris::EDGE_7:  return edgeCut(x    , y + 1, z + 1, x    , y + 1, z    );
-            case gris::EDGE_8:  return edgeCut(x    , y    , z    , x    , y + 1, z    );
-            case gris::EDGE_9:  return edgeCut(x + 1, y    , z    , x + 1, y + 1, z    );
-            case gris::EDGE_10: return edgeCut(x + 1, y    , z + 1, x + 1, y + 1, z + 1);
-            case gris::EDGE_11: return edgeCut(x    , y    , z + 1, x    , y + 1, z + 1);
-            default: assert(false);
-        }
-    };
-
     for(int z = 0; z < dim.z - 1; ++z) {
         for(int y = 0; y < dim.y - 1; ++y) {
             for(int x = 0; x < dim.x -1; ++x) {
-                int currentVoxel = voxelIdx(x, y, z);
+                int currentVoxel = getFlatIndex(x, y, z);
 
                 int caseIdx = 0;
-                caseIdx |= m_volume_data.values[voxelIdx(x    , y    , z    )] < isoValue ? gris::CORNER_0 : 0;
-                caseIdx |= m_volume_data.values[voxelIdx(x + 1, y    , z    )] < isoValue ? gris::CORNER_1 : 0;
-                caseIdx |= m_volume_data.values[voxelIdx(x + 1, y    , z + 1)] < isoValue ? gris::CORNER_2 : 0;
-                caseIdx |= m_volume_data.values[voxelIdx(x    , y    , z + 1)] < isoValue ? gris::CORNER_3 : 0;
-                caseIdx |= m_volume_data.values[voxelIdx(x    , y + 1, z    )] < isoValue ? gris::CORNER_4 : 0;
-                caseIdx |= m_volume_data.values[voxelIdx(x + 1, y + 1, z    )] < isoValue ? gris::CORNER_5 : 0;
-                caseIdx |= m_volume_data.values[voxelIdx(x + 1, y + 1, z + 1)] < isoValue ? gris::CORNER_6 : 0;
-                caseIdx |= m_volume_data.values[voxelIdx(x    , y + 1, z + 1)] < isoValue ? gris::CORNER_7 : 0;
+                caseIdx |= checkInside(x    , y    , z    ) ? gris::CORNER_0 : 0;
+                caseIdx |= checkInside(x + 1, y    , z    ) ? gris::CORNER_1 : 0;
+                caseIdx |= checkInside(x + 1, y    , z + 1) ? gris::CORNER_2 : 0;
+                caseIdx |= checkInside(x    , y    , z + 1) ? gris::CORNER_3 : 0;
+                caseIdx |= checkInside(x    , y + 1, z    ) ? gris::CORNER_4 : 0;
+                caseIdx |= checkInside(x + 1, y + 1, z    ) ? gris::CORNER_5 : 0;
+                caseIdx |= checkInside(x + 1, y + 1, z + 1) ? gris::CORNER_6 : 0;
+                caseIdx |= checkInside(x    , y + 1, z + 1) ? gris::CORNER_7 : 0;
 
                 const int* combinations = gris::dual_points_list[caseIdx];
                 for(int i = 0; i < 4; ++i) {
@@ -659,7 +960,7 @@ void VolumeVisualisation::dualMarchingCubes() {
                         int edgeBit = 1 << e;
 
                         if (mask & edgeBit) {
-                            centroid += getEdgeCut(x, y, z, edgeBit);
+                            centroid += getEdgeCutByEdge(x, y, z, edgeBit);
                             ++count;
                         }
                     }
@@ -675,7 +976,7 @@ void VolumeVisualisation::dualMarchingCubes() {
     }
 
     auto getDualVertexIndex = [&](int x, int y, int z, int edge) {
-        int vi = voxelIdx(x, y, z);
+        int vi = getFlatIndex(x, y, z);
 
         std::array<int, 4>& masks = edgeAssociationGrid[vi];
         for(int i = 0; i < 4; ++i) {
@@ -698,8 +999,8 @@ void VolumeVisualisation::dualMarchingCubes() {
         for(int y = 0; y < dim.y - 1; ++y) {
             for(int x = 0; x < dim.x - 1; ++x) {
                 if(z > 0 && y > 0){
-                    const bool entering = inside(voxelIdx(x, y, z)) && !inside(voxelIdx(x + 1, y, z));
-                    const bool exiting = !inside(voxelIdx(x, y, z)) && inside(voxelIdx(x + 1, y, z));
+                    const bool entering = checkInside(x, y, z) && !checkInside(x + 1, y, z);
+                    const bool exiting = !checkInside(x, y, z) &&  checkInside(x + 1, y, z);
 
                     if(entering || exiting) {
                         int xvi0 = getDualVertexIndex(x, y    , z    , gris::EDGE_0);
@@ -722,8 +1023,8 @@ void VolumeVisualisation::dualMarchingCubes() {
                 }
 
                 if(z > 0 && x > 0){
-                    const bool entering = inside(voxelIdx(x, y, z)) && !inside(voxelIdx(x, y + 1, z));
-                    const bool exiting = !inside(voxelIdx(x, y, z)) && inside(voxelIdx(x, y + 1, z));
+                    const bool entering = checkInside(x, y, z) && !checkInside(x, y + 1, z);
+                    const bool exiting = !checkInside(x, y, z) &&  checkInside(x, y + 1, z);
 
                     if(entering || exiting) {
                         int yvi0 = getDualVertexIndex(x    , y, z    , gris::EDGE_8);
@@ -746,8 +1047,8 @@ void VolumeVisualisation::dualMarchingCubes() {
                 }
 
                 if(x > 0 && y > 0){
-                    const bool entering = inside(voxelIdx(x, y, z)) && !inside(voxelIdx(x, y, z + 1));
-                    const bool exiting = !inside(voxelIdx(x, y, z)) && inside(voxelIdx(x, y, z + 1));
+                    const bool entering = checkInside(x, y, z) && !checkInside(x, y, z + 1);
+                    const bool exiting = !checkInside(x, y, z) &&  checkInside(x, y, z + 1);
 
                     if(entering || exiting) {
                         int zvi0 = getDualVertexIndex(x    , y    , z, gris::EDGE_3);
@@ -772,109 +1073,15 @@ void VolumeVisualisation::dualMarchingCubes() {
         }
     }
 
-
-    // X-edges pass
-    // for(int z = 1; z < dim.z; ++z) {
-    //     for(int y = 1; y < dim.y; ++y) {
-    //         for(int x = 0; x < dim.x - 1; ++x) {
-    //             int i0 = voxelIdx(x    , y, z);
-    //             int i1 = voxelIdx(x + 1, y, z);
-    //
-    //             if(inside(i0) == inside(i1)) {
-    //                 continue;
-    //             }
-    //
-    //             // vi: vertex index
-    //             int vi0 = getDualVertexIndex(x, y    , z    , gris::EDGE_0);
-    //             int vi1 = getDualVertexIndex(x, y - 1, z    , gris::EDGE_4);
-    //             int vi2 = getDualVertexIndex(x, y - 1, z - 1, gris::EDGE_6);
-    //             int vi3 = getDualVertexIndex(x, y    , z - 1, gris::EDGE_2);
-    //
-    //             if(vi0 == -1 || vi1 == -1 || vi2 == -1 || vi3 == -1) {
-    //                 continue;
-    //             }
-    //
-    //             if(inside(i0)) {
-    //                 triangles.push_back({vi0, vi1, vi2});
-    //                 triangles.push_back({vi0, vi2, vi3});
-    //             } else {
-    //                 triangles.push_back({vi0, vi3, vi2});
-    //                 triangles.push_back({vi0, vi2, vi1});
-    //             }
-    //         }
-    //     }
-    // }
-    //
-    // // Y-edges pass
-    // for(int z = 1; z < dim.z; ++z) {
-    //     for(int y = 0; y < dim.y - 1; ++y) {
-    //         for(int x = 1; x < dim.x; ++x) {
-    //             int i0 = voxelIdx(x, y    , z);
-    //             int i1 = voxelIdx(x, y + 1, z);
-    //
-    //             if(inside(i0) == inside(i1)) {
-    //                 continue;
-    //             }
-    //
-    //             // vi: vertex index
-    //             int vi0 = getDualVertexIndex(x    , y, z    , gris::EDGE_9);
-    //             int vi1 = getDualVertexIndex(x - 1, y, z    , gris::EDGE_8);
-    //             int vi2 = getDualVertexIndex(x - 1, y, z - 1, gris::EDGE_11);
-    //             int vi3 = getDualVertexIndex(x    , y, z - 1, gris::EDGE_10);
-    //
-    //             if(vi0 == -1 || vi1 == -1 || vi2 == -1 || vi3 == -1) {
-    //                 continue;
-    //             }
-    //
-    //             if(inside(i0)) {
-    //                 triangles.push_back({vi0, vi1, vi2});
-    //                 triangles.push_back({vi0, vi2, vi3});
-    //             } else {
-    //                 triangles.push_back({vi0, vi3, vi2});
-    //                 triangles.push_back({vi0, vi2, vi1});
-    //             }
-    //         }
-    //     }
-    // }
-    //
-    // // Z-edges pass
-    // for(int z = 0; z < dim.z - 1; ++z) {
-    //     for(int y = 1; y < dim.y; ++y) {
-    //         for(int x = 1; x < dim.x; ++x) {
-    //             int i0 = voxelIdx(x, y, z    );
-    //             int i1 = voxelIdx(x, y, z + 1);
-    //
-    //             if(inside(i0) == inside(i1)) {
-    //                 continue;
-    //             }
-    //
-    //             // vi: vertex index
-    //             int vi0 = getDualVertexIndex(x    , y    , z, gris::EDGE_1);
-    //             int vi1 = getDualVertexIndex(x - 1, y    , z, gris::EDGE_3);
-    //             int vi2 = getDualVertexIndex(x - 1, y - 1, z, gris::EDGE_7);
-    //             int vi3 = getDualVertexIndex(x    , y - 1, z, gris::EDGE_5);
-    //
-    //             if(vi0 == -1 || vi1 == -1 || vi2 == -1 || vi3 == -1) {
-    //                 continue;
-    //             }
-    //
-    //             if(inside(i0)) {
-    //                 triangles.push_back({vi0, vi1, vi2});
-    //                 triangles.push_back({vi0, vi2, vi3});
-    //             } else {
-    //                 triangles.push_back({vi0, vi3, vi2});
-    //                 triangles.push_back({vi0, vi2, vi1});
-    //             }
-    //         }
-    //     }
-    // }
-
-
     m_mesh.vertices.insert(m_mesh.vertices.end(), vertices.begin(), vertices.end());
     m_mesh.triangles.insert(m_mesh.triangles.end(), triangles.begin(), triangles.end());
 }
 
 void VolumeVisualisation::calculateNormals() {
+    if(m_mesh.vertices.size() == 0){
+        return;
+    }
+
     if(m_is_trivariate) {
         calculateNormalsAnalytical();
     } else {
@@ -885,34 +1092,23 @@ void VolumeVisualisation::calculateNormals() {
 void VolumeVisualisation::calculateNormalsFiniteDifferences() {
     auto dim = m_volume_data.dimensions;
 
-    const int stepX = 1;
-    const int stepY = stepX * dim.x;
-    const int stepZ = stepY * dim.y;
-
     const float delta = 1.0f;
-
-    auto density = [&](int x, int y, int z) {
-        return m_volume_data.values[z * stepZ + y * stepY + x * stepX];
-    };
 
     auto gradient = [&](int x, int y, int z) {
         // m: minus, p: plus
-
         int xm = std::max(x - 1, 0);
-        int xp = std::min(x + 1, m_volume_data.dimensions.x - 1);
+        int xp = std::min(x + 1, dim.x - 1);
 
         int ym = std::max(y - 1, 0);
-        int yp = std::min(y + 1, m_volume_data.dimensions.y - 1);
+        int yp = std::min(y + 1, dim.y - 1);
 
         int zm = std::max(z - 1, 0);
-        int zp = std::min(z + 1, m_volume_data.dimensions.z - 1);
-
-        // std::cout << xp << ", " << yp << ", " << zp << ", " << xm << ", " << ym << ", " << zm << ", " << std::endl;
+        int zp = std::min(z + 1, dim.z - 1);
 
         return glm::vec3(
-            (density(xp, y , z ) - density(xm, y , z  )) / (2.0f * delta),
-            (density(x , yp, z ) - density(x , ym, z  )) / (2.0f * delta),
-            (density(x , y , zp) - density(x , y , zm )) / (2.0f * delta)
+            (getDensity(xp, y , z ) - getDensity(xm, y , z  )) / (2.0f * delta),
+            (getDensity(x , yp, z ) - getDensity(x , ym, z  )) / (2.0f * delta),
+            (getDensity(x , y , zp) - getDensity(x , y , zm )) / (2.0f * delta)
         );
     };
 
@@ -927,9 +1123,9 @@ void VolumeVisualisation::calculateNormalsFiniteDifferences() {
         int dy1 = std::min(dy0 + 1, dim.y - 1);
         int dz1 = std::min(dz0 + 1, dim.z - 1);
 
-        float fx = (v.x / delta) - dx0;
-        float fy = (v.y / delta) - dy0;
-        float fz = (v.z / delta) - dz0;
+        float fx = (v.x - dx0) / (delta);
+        float fy = (v.y - dy0) / (delta);
+        float fz = (v.z - dz0) / (delta);
 
         glm::vec3 g000 = gradient(dx0, dy0, dz0);
         glm::vec3 g100 = gradient(dx1, dy0, dz0);
@@ -1070,15 +1266,6 @@ void VolumeVisualisation::cleanUpTriangleSoup() {
         for (int dx = -1; dx <= 1; ++dx) {
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dz = -1; dz <= 1; ++dz) {
-                    // Reach per component
-                    // float rx = dx * epsilon;
-                    // float ry = dy * epsilon;
-                    // float rz = dz * epsilon;
-                    //
-                    // if(rx * rx + ry * ry + rz * rz > sqEpsilon) {
-                    //     continue;
-                    // }
-
                     std::tuple<int, int, int> key = { cx + dx, cy + dy, cz + dz };
                     auto it = grid.find(key);
 
@@ -1114,11 +1301,6 @@ void VolumeVisualisation::cleanUpTriangleSoup() {
         t.z = indexRemap[t.z];
     }
 
-    // Remove degenerate triangles (those which collapsed into an edge or a point)
-    // std::erase_if(m_mesh.triangles, [](const glm::ivec3& t){
-    //    return t.x == t.y || t.y == t.z || t.x == t.z;
-    // });
-
     // Remove degenerate triangles (those which have very little area)
     std::erase_if(m_mesh.triangles, [&](const glm::ivec3& t) {
         const glm::vec3& a = newVertices[t.x];
@@ -1138,13 +1320,6 @@ void VolumeVisualisation::cleanUpTriangleSoup() {
 
 
         auto canonical = [](int a, int b, int c) {
-            // // Canonical form is the one where indices are sorted in ascending order without considering the triangle winding order
-            // if (a > b) std::swap(a, b);
-            // if (b > c) std::swap(b, c);
-            // if (a > b) std::swap(a, b);
-            // return std::tuple{ a, b, c };
-
-
             // Canonical form is the one where smallest index comes first without changing the triangle winding order
             if (a < b && a < c) { return std::tuple{ a, b, c }; }
             if (b < a && b < c) { return std::tuple{ b, c, a }; }

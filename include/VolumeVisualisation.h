@@ -4,6 +4,8 @@
 #include "gris/TriangeMesh.h"
 #include "gris/VolumeData.h"
 
+#include "OctreeNode.h"
+
 class VolumeVisualisation {
 public:
     explicit VolumeVisualisation(const gris::BoundingBox& bounding_box);
@@ -16,13 +18,29 @@ public:
     void drawMesh(QOpenGLFunctions_2_1* f) const;
     void drawNormals(QOpenGLFunctions_2_1* f) const;
     void drawVolumeData(QOpenGLFunctions_2_1* f) const;
+    void drawOctree(QOpenGLFunctions_2_1* f) const;
     void drawBoundingBox(QOpenGLFunctions_2_1* f) const;
 
 private:
     static gris::TriangleMesh poligonize(const gris::GridCell& grid_cell, float iso_value);
 
+    int getFlatIndex(int x, int y, int z) const;
+
+    float getDensity(int flatIndex) const;
+    float getDensity(int x, int y, int z) const;
+
+    bool checkInside(int flaxIndex) const;
+    bool checkInside(int x, int y, int z) const;
+
+    glm::vec3 edgeCutPosition(int x0, int y0, int z0, int x1, int y1, int z1);
+    glm::vec3 getEdgeCutByEdge(int x, int y, int z, int edge);
+
+    std::tuple<int, float, float> buildNode(const glm::ivec3 start, const glm::ivec3 end);
+    void buildOctree();
+
     void marchingCubes();
     void marchingCubes2();
+    void marchingCubesOctree();
     void dualMarchingCubes();
 
     void snapToGrid(float distance);
@@ -37,4 +55,5 @@ private:
     float m_iso_value;
     gris::VolumeData m_volume_data;
     gris::TriangleMesh m_mesh;
+    std::vector<OctreeNode> m_octree;
 };

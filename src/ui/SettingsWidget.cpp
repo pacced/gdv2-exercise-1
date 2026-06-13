@@ -2,7 +2,7 @@
 
 #include <QPushButton>
 
-ui::SettingsWidget::SettingsWidget(bool render_mesh, bool render_wireframe, bool render_normals, bool render_volume, QWidget* parent):
+ui::SettingsWidget::SettingsWidget(bool render_mesh, bool render_wireframe, bool render_normals, bool render_volume, bool render_octree, QWidget* parent):
     m_load_dialog(new ui::LoadDialog) {
     setupUi(this);
     assert(render_mesh != render_wireframe);
@@ -11,13 +11,14 @@ ui::SettingsWidget::SettingsWidget(bool render_mesh, bool render_wireframe, bool
     m_wireframe_check_box->setChecked(render_wireframe);
     m_normals_check_box->setChecked(render_normals);
     m_volume_check_box->setChecked(render_volume);
+    m_octree_check_box->setChecked(render_octree);
 
     connect(m_mesh_check_box, &QCheckBox::toggled, m_wireframe_check_box, [&](bool is_checked) -> void {
         {
             QSignalBlocker blocker(m_wireframe_check_box);
             m_wireframe_check_box->setChecked(!is_checked && m_wireframe_check_box->isChecked());
         }
-        emit onRenderChecksChanged(m_mesh_check_box->isChecked(), m_wireframe_check_box->isChecked(), m_normals_check_box->isChecked(), m_volume_check_box->isChecked());
+        emit onRenderChecksChanged(m_mesh_check_box->isChecked(), m_wireframe_check_box->isChecked(), m_normals_check_box->isChecked(), m_volume_check_box->isChecked(), m_octree_check_box->isChecked());
     });
 
     connect(m_wireframe_check_box, &QCheckBox::toggled, m_mesh_check_box, [&](bool is_checked) -> void {
@@ -25,15 +26,19 @@ ui::SettingsWidget::SettingsWidget(bool render_mesh, bool render_wireframe, bool
             QSignalBlocker blocker(m_mesh_check_box);
             m_mesh_check_box->setChecked(!is_checked && m_mesh_check_box->isChecked());
         }
-        emit onRenderChecksChanged(m_mesh_check_box->isChecked(), m_wireframe_check_box->isChecked(), m_normals_check_box->isChecked(), m_volume_check_box->isChecked());
+        emit onRenderChecksChanged(m_mesh_check_box->isChecked(), m_wireframe_check_box->isChecked(), m_normals_check_box->isChecked(), m_volume_check_box->isChecked(), m_octree_check_box->isChecked());
     });
 
     connect(m_normals_check_box, &QCheckBox::toggled, this, [&](bool is_checked) {
-        emit onRenderChecksChanged(m_mesh_check_box->isChecked(), m_wireframe_check_box->isChecked(), m_normals_check_box->isChecked(), m_volume_check_box->isChecked());
+        emit onRenderChecksChanged(m_mesh_check_box->isChecked(), m_wireframe_check_box->isChecked(), m_normals_check_box->isChecked(), m_volume_check_box->isChecked(), m_octree_check_box->isChecked());
     });
 
     connect(m_volume_check_box, &QCheckBox::toggled, this, [&](bool is_checked) {
-        emit onRenderChecksChanged(m_mesh_check_box->isChecked(), m_wireframe_check_box->isChecked(), m_normals_check_box->isChecked(), m_volume_check_box->isChecked());
+        emit onRenderChecksChanged(m_mesh_check_box->isChecked(), m_wireframe_check_box->isChecked(), m_normals_check_box->isChecked(), m_volume_check_box->isChecked(), m_octree_check_box->isChecked());
+    });
+
+    connect(m_octree_check_box, &QCheckBox::toggled, this, [&](bool is_checked) {
+        emit onRenderChecksChanged(m_mesh_check_box->isChecked(), m_wireframe_check_box->isChecked(), m_normals_check_box->isChecked(), m_volume_check_box->isChecked(), m_octree_check_box->isChecked());
     });
 
     m_volume_infos.push_back({"data/neghip(size=64x64x64,spacing=1x1x1).raw", {64, 64, 64}});

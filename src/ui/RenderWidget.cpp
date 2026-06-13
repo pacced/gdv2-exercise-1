@@ -11,11 +11,12 @@ ui::RenderWidget::RenderWidget(QWidget* parent):
 
 ui::RenderWidget::~RenderWidget() { }
 
-void ui::RenderWidget::setRenderChecks(bool draw_mesh, bool draw_wireframe, bool draw_normals, bool draw_volume) {
+void ui::RenderWidget::setRenderChecks(bool draw_mesh, bool draw_wireframe, bool draw_normals, bool draw_volume, bool draw_octree) {
     m_draw_mesh = draw_mesh;
     m_draw_wireframe = draw_wireframe;
     m_draw_normals = draw_normals;
     m_draw_volume = draw_volume;
+    m_draw_octree = draw_octree;
     update();
 }
 
@@ -121,6 +122,9 @@ void ui::RenderWidget::paintGL() {
         m_f->glDisable(GL_LIGHTING);
         m_f->glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         m_volume_visualisation.drawVolumeData(m_f);
+    }
+    if(m_draw_octree) {
+        m_volume_visualisation.drawOctree(m_f);
     }
 }
 

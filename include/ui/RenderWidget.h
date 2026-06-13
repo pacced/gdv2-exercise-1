@@ -22,7 +22,7 @@ public:
     ~RenderWidget();
 
 public slots:
-    void setRenderChecks(bool draw_mesh, bool draw_wireframe, bool draw_normals, bool draw_volume);
+    void setRenderChecks(bool draw_mesh, bool draw_wireframe, bool draw_normals, bool draw_volume, bool draw_octree);
     void generateVolumeMesh(
         std::string data_path,
         glm::ivec3 dimensions,
@@ -58,6 +58,7 @@ private:
     bool m_draw_wireframe;
     bool m_draw_normals;
     bool m_draw_volume;
+    bool m_draw_octree;
 
     QOpenGLFunctions_2_1* m_f;
     gris::Camera m_camera;
