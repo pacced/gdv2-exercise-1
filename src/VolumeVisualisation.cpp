@@ -19,6 +19,8 @@
 #include "TupleHash.h"
 #include "OctreeNode.h"
 
+#include <omp.h>
+
 constexpr float BARTH_W = 1.0f;
 
 VolumeVisualisation::VolumeVisualisation(const gris::BoundingBox& bounding_box):
@@ -178,7 +180,13 @@ void VolumeVisualisation::generateMesh(float iso_value, bool dual, bool grid_sna
         std::cout << "Mesh Optimization finised after " << static_cast<float>(stop - start) / CLOCKS_PER_SEC << " seconds" << std::endl;
     }
 
+
+    std::cout << "\nNormal Calculation started ..." << std::endl;
+    double ompStart = omp_get_wtime();
     calculateNormals();
+    double ompStop = omp_get_wtime();
+    std::cout << "Normal Calculation finised after " << (ompStop - ompStart) << " seconds" << std::endl;
+
 
     std::cout << "Resulting Mesh has: " << m_mesh.vertices.size() << " vertices, " << m_mesh.triangles.size() << " triangles.\n"
               << std::endl;
@@ -637,6 +645,7 @@ std::tuple<int, float, float> VolumeVisualisation::buildNode(const glm::ivec3 st
 
     return { selfIndex, min, max };
 }
+
 void VolumeVisualisation::buildOctree() {
     m_octree.clear();
 
@@ -648,13 +657,14 @@ void VolumeVisualisation::buildOctree() {
     buildNode(start, end);
 }
 
+
+
 void VolumeVisualisation::marchingCubesOctree() {
     m_mesh.vertices.clear();
     m_mesh.normals.clear();
     m_mesh.triangles.clear();
 
-    const gris::VolumeData& volumeData = m_volume_data;
-    auto dim = volumeData.dimensions;
+    const glm::ivec3& dim = m_volume_data.dimensions;
 
     buildOctree();
 
@@ -922,9 +932,7 @@ void VolumeVisualisation::dualMarchingCubes() {
     m_mesh.triangles.clear();
 
     // DONE(4.4): implement dual marching cubes algorithm
-    const gris::VolumeData& volumeData = m_volume_data;
-    auto dim = volumeData.dimensions;
-
+    const glm::ivec3& dim = m_volume_data.dimensions;
     const size_t totalGridPoints = dim.x * dim.y * dim.z;
 
     std::vector<std::array<int, 4>> centroidIndexGrid(totalGridPoints, {-1, -1, -1, -1});
@@ -1091,8 +1099,9 @@ void VolumeVisualisation::calculateNormals() {
 
 void VolumeVisualisation::calculateNormalsFiniteDifferences() {
     auto dim = m_volume_data.dimensions;
-
     const float delta = 1.0f;
+
+    std::vector<glm::vec3> gradientCache(dim.x * dim.y * dim.z);
 
     auto gradient = [&](int x, int y, int z) {
         // m: minus, p: plus
@@ -1106,18 +1115,37 @@ void VolumeVisualisation::calculateNormalsFiniteDifferences() {
         int zp = std::min(z + 1, dim.z - 1);
 
         return glm::vec3(
-            (getDensity(xp, y , z ) - getDensity(xm, y , z  )) / (2.0f * delta),
-            (getDensity(x , yp, z ) - getDensity(x , ym, z  )) / (2.0f * delta),
-            (getDensity(x , y , zp) - getDensity(x , y , zm )) / (2.0f * delta)
+            (getDensity(xp, y , z ) - getDensity(xm, y , z )) / (2.0f * delta),
+                         (getDensity(x , yp, z ) - getDensity(x , ym, z )) / (2.0f * delta),
+                         (getDensity(x , y , zp) - getDensity(x , y , zm)) / (2.0f * delta)
         );
     };
 
+    auto cachedGradient = [&](int x, int y, int z) {
+        return gradientCache[z * dim.y * dim.x + y * dim.x + x];
+    };
 
-    for(const glm::vec3& v : m_mesh.vertices) {
+    #pragma omp parallel for collapse(3) schedule(static)
+    for(int z = 0; z < dim.z; ++z) {
+        for(int y = 0; y < dim.y; ++y) {
+            for(int x = 0; x < dim.x; ++x) {
+                const int flatIndex = z * dim.y * dim.x + y * dim.x + x;
+                gradientCache[flatIndex] = gradient(x, y, z);
+            }
+        }
+    }
+
+    const int n = static_cast<int>(m_mesh.vertices.size());
+    m_mesh.normals.resize(n);
+
+    #pragma omp parallel for schedule(static)
+    for(int i = 0; i < n; ++i) {
+        const glm::vec3& v = m_mesh.vertices[i];
+
         // Discrete Components
-        int dx0 = (int)(v.x / delta);
-        int dy0 = (int)(v.y / delta);
-        int dz0 = (int)(v.z / delta);
+        int dx0 = static_cast<int>(v.x / delta);
+        int dy0 = static_cast<int>(v.y / delta);
+        int dz0 = static_cast<int>(v.z / delta);
 
         int dx1 = std::min(dx0 + 1, dim.x - 1);
         int dy1 = std::min(dy0 + 1, dim.y - 1);
@@ -1127,14 +1155,14 @@ void VolumeVisualisation::calculateNormalsFiniteDifferences() {
         float fy = (v.y - dy0) / (delta);
         float fz = (v.z - dz0) / (delta);
 
-        glm::vec3 g000 = gradient(dx0, dy0, dz0);
-        glm::vec3 g100 = gradient(dx1, dy0, dz0);
-        glm::vec3 g101 = gradient(dx1, dy0, dz1);
-        glm::vec3 g001 = gradient(dx0, dy0, dz1);
-        glm::vec3 g010 = gradient(dx0, dy1, dz0);
-        glm::vec3 g110 = gradient(dx1, dy1, dz0);
-        glm::vec3 g111 = gradient(dx1, dy1, dz1);
-        glm::vec3 g011 = gradient(dx0, dy1, dz1);
+        glm::vec3 g000 = cachedGradient(dx0, dy0, dz0);
+        glm::vec3 g100 = cachedGradient(dx1, dy0, dz0);
+        glm::vec3 g101 = cachedGradient(dx1, dy0, dz1);
+        glm::vec3 g001 = cachedGradient(dx0, dy0, dz1);
+        glm::vec3 g010 = cachedGradient(dx0, dy1, dz0);
+        glm::vec3 g110 = cachedGradient(dx1, dy1, dz0);
+        glm::vec3 g111 = cachedGradient(dx1, dy1, dz1);
+        glm::vec3 g011 = cachedGradient(dx0, dy1, dz1);
 
         glm::vec3 g00 = glm::mix(g000, g100, fx);
         glm::vec3 g01 = glm::mix(g001, g101, fx);
@@ -1147,7 +1175,7 @@ void VolumeVisualisation::calculateNormalsFiniteDifferences() {
         glm::vec3 normal = glm::normalize(glm::mix(g0, g1, fz));
 
         // -normal because normal is along density descent
-        m_mesh.normals.push_back(-normal);
+        m_mesh.normals[i] = -normal;
     }
 }
 
@@ -1163,7 +1191,13 @@ void VolumeVisualisation::calculateNormalsAnalytical() {
     glm::ivec3 dim = m_volume_data.dimensions;
     float scalingFactor = 8.0f / std::max(dim.x, std::max(dim.y, dim.z));
 
-    for(const glm::ivec3& v : m_mesh.vertices) {
+    const size_t vertexCount = m_mesh.vertices.size();
+    m_mesh.normals.resize(vertexCount);
+
+    #pragma omp parallel for schedule(static)
+    for(size_t i = 0; i < vertexCount; ++i) {
+        const glm::vec3& v = m_mesh.vertices[i];
+
         float x = (v.x - m_volume_data.dimensions.x * 0.5f) * scalingFactor;
         float y = (v.y - m_volume_data.dimensions.y * 0.5f) * scalingFactor;
         float z = (v.z - m_volume_data.dimensions.z * 0.5f) * scalingFactor;
@@ -1187,7 +1221,7 @@ void VolumeVisualisation::calculateNormalsAnalytical() {
 
         glm::vec3 normal = glm::normalize(glm::vec3(dFdx, dFdy, dFdz));
         // -normal because normal is along density descent
-        m_mesh.normals.push_back(-normal);
+        m_mesh.normals[i] = -normal;
     }
 }
 
