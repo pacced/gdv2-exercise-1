@@ -558,7 +558,7 @@ std::tuple<int, float, float> VolumeVisualisation::buildNode(const glm::ivec3 st
     auto dim = m_volume_data.dimensions;
 
     const int minSize = 8;
-    // todo make it so that something like 1x12x24 is still split
+    // TODO make it so that something like 1x12x24 is still split
     if(span.x <= minSize && span.y <= minSize && span.z <= minSize) {
         // Leaf, do not reduce anymore
 
@@ -935,58 +935,81 @@ void VolumeVisualisation::dualMarchingCubes() {
     const glm::ivec3& dim = m_volume_data.dimensions;
     const size_t totalGridPoints = dim.x * dim.y * dim.z;
 
-    std::vector<std::array<int, 4>> centroidIndexGrid(totalGridPoints, {-1, -1, -1, -1});
-    std::vector<std::array<int, 4>> edgeAssociationGrid(totalGridPoints, {0, 0, 0, 0});
-    std::vector<glm::vec3> vertices;
+    buildOctree();
 
-    for(int z = 0; z < dim.z - 1; ++z) {
-        for(int y = 0; y < dim.y - 1; ++y) {
-            for(int x = 0; x < dim.x -1; ++x) {
-                int currentVoxel = getFlatIndex(x, y, z);
+    std::vector<glm::ivec3> validVoxels;
+    for(const OctreeNode& node : m_octree){
+        if(node.type != POPULATED_LEAF){
+            continue;
+        }
 
-                int caseIdx = 0;
-                caseIdx |= checkInside(x    , y    , z    ) ? gris::CORNER_0 : 0;
-                caseIdx |= checkInside(x + 1, y    , z    ) ? gris::CORNER_1 : 0;
-                caseIdx |= checkInside(x + 1, y    , z + 1) ? gris::CORNER_2 : 0;
-                caseIdx |= checkInside(x    , y    , z + 1) ? gris::CORNER_3 : 0;
-                caseIdx |= checkInside(x    , y + 1, z    ) ? gris::CORNER_4 : 0;
-                caseIdx |= checkInside(x + 1, y + 1, z    ) ? gris::CORNER_5 : 0;
-                caseIdx |= checkInside(x + 1, y + 1, z + 1) ? gris::CORNER_6 : 0;
-                caseIdx |= checkInside(x    , y + 1, z + 1) ? gris::CORNER_7 : 0;
+        const glm::ivec3& start = node.regionStart;
+        const glm::ivec3& end = node.regionEnd;
 
-                const int* combinations = gris::dual_points_list[caseIdx];
-                for(int i = 0; i < 4; ++i) {
-                    int mask = combinations[i];
-                    if(mask == 0) {
-                        break;
-                    }
-
-                    glm::vec3 centroid(0.0f);
-                    int count = 0;
-
-                    for(int e = 0; e < 12; ++e) {
-                        int edgeBit = 1 << e;
-
-                        if (mask & edgeBit) {
-                            centroid += getEdgeCutByEdge(x, y, z, edgeBit);
-                            ++count;
-                        }
-                    }
-
-                    centroid /= (float)count;
-
-                    centroidIndexGrid[currentVoxel][i] = vertices.size();
-                    edgeAssociationGrid[currentVoxel][i] = mask;
-                    vertices.push_back(centroid);
+        for(int z = start.z; z < end.z; ++z) {
+            for(int y = start.y; y < end.y; ++y) {
+                for(int x = start.x; x < end.x; ++x) {
+                    validVoxels.push_back({x, y, z});
                 }
             }
+        }
+    }
+
+    const size_t voxelCount = validVoxels.size();
+
+    std::vector<std::array<int, 4>> centroidIndicesByVoxel(totalGridPoints, {-1, -1, -1, -1});
+    std::vector<std::array<int, 4>> edgeAssociationByVoxel(totalGridPoints, {0, 0, 0, 0});
+
+    for(int i = 0; i < voxelCount; ++i) {
+        const glm::ivec3& coords = validVoxels[i];
+
+        int x = coords.x;
+        int y = coords.y;
+        int z = coords.z;
+
+        int caseIdx = 0;
+        caseIdx |= checkInside(x    , y    , z    ) ? gris::CORNER_0 : 0;
+        caseIdx |= checkInside(x + 1, y    , z    ) ? gris::CORNER_1 : 0;
+        caseIdx |= checkInside(x + 1, y    , z + 1) ? gris::CORNER_2 : 0;
+        caseIdx |= checkInside(x    , y    , z + 1) ? gris::CORNER_3 : 0;
+        caseIdx |= checkInside(x    , y + 1, z    ) ? gris::CORNER_4 : 0;
+        caseIdx |= checkInside(x + 1, y + 1, z    ) ? gris::CORNER_5 : 0;
+        caseIdx |= checkInside(x + 1, y + 1, z + 1) ? gris::CORNER_6 : 0;
+        caseIdx |= checkInside(x    , y + 1, z + 1) ? gris::CORNER_7 : 0;
+
+        const int* combinations = gris::dual_points_list[caseIdx];
+        for(int j = 0; j < 4; ++j) {
+            int mask = combinations[j];
+            if(mask == 0) {
+                break;
+            }
+
+            glm::vec3 centroid(0.0f);
+            int count = 0;
+
+            for(int e = 0; e < 12; ++e) {
+                int edgeBit = 1 << e;
+
+                if (mask & edgeBit) {
+                    centroid += getEdgeCutByEdge(x, y, z, edgeBit);
+                    ++count;
+                }
+            }
+
+            centroid /= (float)count;
+
+            int flatIndex = getFlatIndex(x, y, z);
+
+            centroidIndicesByVoxel[flatIndex][j] = m_mesh.vertices.size();
+            edgeAssociationByVoxel[flatIndex][j] = mask;
+            m_mesh.vertices.push_back(centroid);
         }
     }
 
     auto getDualVertexIndex = [&](int x, int y, int z, int edge) {
         int vi = getFlatIndex(x, y, z);
 
-        std::array<int, 4>& masks = edgeAssociationGrid[vi];
+        std::array<int, 4>& masks = edgeAssociationByVoxel[vi];
         for(int i = 0; i < 4; ++i) {
             int mask = masks[i];
             if(mask == 0){
@@ -994,95 +1017,92 @@ void VolumeVisualisation::dualMarchingCubes() {
             }
 
             if (mask & edge){
-                return centroidIndexGrid[vi][i];
+                return centroidIndicesByVoxel[vi][i];
             }
         }
 
         return -1;
     };
 
-    std::vector<glm::ivec3> triangles;
+    for(int i = 0; i < voxelCount; ++i) {
+        const glm::ivec3& coords = validVoxels[i];
 
-    for(int z = 0; z < dim.z - 1; ++z) {
-        for(int y = 0; y < dim.y - 1; ++y) {
-            for(int x = 0; x < dim.x - 1; ++x) {
-                if(z > 0 && y > 0){
-                    const bool entering = checkInside(x, y, z) && !checkInside(x + 1, y, z);
-                    const bool exiting = !checkInside(x, y, z) &&  checkInside(x + 1, y, z);
+        int x = coords.x;
+        int y = coords.y;
+        int z = coords.z;
 
-                    if(entering || exiting) {
-                        int xvi0 = getDualVertexIndex(x, y    , z    , gris::EDGE_0);
-                        int xvi1 = getDualVertexIndex(x, y - 1, z    , gris::EDGE_4);
-                        int xvi2 = getDualVertexIndex(x, y - 1, z - 1, gris::EDGE_6);
-                        int xvi3 = getDualVertexIndex(x, y    , z - 1, gris::EDGE_2);
+        if(z > 0 && y > 0) {
+            const bool entering = checkInside(x, y, z) && !checkInside(x + 1, y, z);
+            const bool exiting = !checkInside(x, y, z) &&  checkInside(x + 1, y, z);
 
-                        if(xvi0 == -1 || xvi1 == -1 || xvi2 == -1 || xvi3 == -1) {
-                            continue;
-                        }
+            if(entering || exiting) {
+                int xvi0 = getDualVertexIndex(x, y    , z    , gris::EDGE_0);
+                int xvi1 = getDualVertexIndex(x, y - 1, z    , gris::EDGE_4);
+                int xvi2 = getDualVertexIndex(x, y - 1, z - 1, gris::EDGE_6);
+                int xvi3 = getDualVertexIndex(x, y    , z - 1, gris::EDGE_2);
 
-                        if(entering) {
-                            triangles.push_back({xvi0, xvi1, xvi2});
-                            triangles.push_back({xvi0, xvi2, xvi3});
-                        } else {
-                            triangles.push_back({xvi0, xvi3, xvi2});
-                            triangles.push_back({xvi0, xvi2, xvi1});
-                        }
-                    }
+                if(xvi0 == -1 || xvi1 == -1 || xvi2 == -1 || xvi3 == -1) {
+                    continue;
                 }
 
-                if(z > 0 && x > 0){
-                    const bool entering = checkInside(x, y, z) && !checkInside(x, y + 1, z);
-                    const bool exiting = !checkInside(x, y, z) &&  checkInside(x, y + 1, z);
+                if(entering) {
+                    m_mesh.triangles.push_back({xvi0, xvi1, xvi2});
+                    m_mesh.triangles.push_back({xvi0, xvi2, xvi3});
+                } else {
+                    m_mesh.triangles.push_back({xvi0, xvi3, xvi2});
+                    m_mesh.triangles.push_back({xvi0, xvi2, xvi1});
+                }
+            }
+        }
 
-                    if(entering || exiting) {
-                        int yvi0 = getDualVertexIndex(x    , y, z    , gris::EDGE_8);
-                        int yvi1 = getDualVertexIndex(x    , y, z - 1, gris::EDGE_11);
-                        int yvi2 = getDualVertexIndex(x - 1, y, z - 1, gris::EDGE_10);
-                        int yvi3 = getDualVertexIndex(x - 1, y, z    , gris::EDGE_9);
+        if(z > 0 && x > 0){
+            const bool entering = checkInside(x, y, z) && !checkInside(x, y + 1, z);
+            const bool exiting = !checkInside(x, y, z) &&  checkInside(x, y + 1, z);
 
-                        if(yvi0 == -1 || yvi1 == -1 || yvi2 == -1 || yvi3 == -1) {
-                            continue;
-                        }
+            if(entering || exiting) {
+                int yvi0 = getDualVertexIndex(x    , y, z    , gris::EDGE_8);
+                int yvi1 = getDualVertexIndex(x    , y, z - 1, gris::EDGE_11);
+                int yvi2 = getDualVertexIndex(x - 1, y, z - 1, gris::EDGE_10);
+                int yvi3 = getDualVertexIndex(x - 1, y, z    , gris::EDGE_9);
 
-                        if(entering) {
-                            triangles.push_back({yvi0, yvi1, yvi2});
-                            triangles.push_back({yvi0, yvi2, yvi3});
-                        } else {
-                            triangles.push_back({yvi0, yvi3, yvi2});
-                            triangles.push_back({yvi0, yvi2, yvi1});
-                        }
-                    }
+                if(yvi0 == -1 || yvi1 == -1 || yvi2 == -1 || yvi3 == -1) {
+                    continue;
                 }
 
-                if(x > 0 && y > 0){
-                    const bool entering = checkInside(x, y, z) && !checkInside(x, y, z + 1);
-                    const bool exiting = !checkInside(x, y, z) &&  checkInside(x, y, z + 1);
+                if(entering) {
+                    m_mesh.triangles.push_back({yvi0, yvi1, yvi2});
+                    m_mesh.triangles.push_back({yvi0, yvi2, yvi3});
+                } else {
+                    m_mesh.triangles.push_back({yvi0, yvi3, yvi2});
+                    m_mesh.triangles.push_back({yvi0, yvi2, yvi1});
+                }
+            }
+        }
 
-                    if(entering || exiting) {
-                        int zvi0 = getDualVertexIndex(x    , y    , z, gris::EDGE_3);
-                        int zvi1 = getDualVertexIndex(x - 1, y    , z, gris::EDGE_1);
-                        int zvi2 = getDualVertexIndex(x - 1, y - 1, z, gris::EDGE_5);
-                        int zvi3 = getDualVertexIndex(x    , y - 1, z, gris::EDGE_7);
+        if(x > 0 && y > 0){
+            const bool entering = checkInside(x, y, z) && !checkInside(x, y, z + 1);
+            const bool exiting = !checkInside(x, y, z) &&  checkInside(x, y, z + 1);
 
-                        if(zvi0 == -1 || zvi1 == -1 || zvi2 == -1 || zvi3 == -1) {
-                            continue;
-                        }
+            if(entering || exiting) {
+                int zvi0 = getDualVertexIndex(x    , y    , z, gris::EDGE_3);
+                int zvi1 = getDualVertexIndex(x - 1, y    , z, gris::EDGE_1);
+                int zvi2 = getDualVertexIndex(x - 1, y - 1, z, gris::EDGE_5);
+                int zvi3 = getDualVertexIndex(x    , y - 1, z, gris::EDGE_7);
 
-                        if(entering) {
-                            triangles.push_back({zvi0, zvi1, zvi2});
-                            triangles.push_back({zvi0, zvi2, zvi3});
-                        } else {
-                            triangles.push_back({zvi0, zvi3, zvi2});
-                            triangles.push_back({zvi0, zvi2, zvi1});
-                        }
-                    }
+                if(zvi0 == -1 || zvi1 == -1 || zvi2 == -1 || zvi3 == -1) {
+                    continue;
+                }
+
+                if(entering) {
+                    m_mesh.triangles.push_back({zvi0, zvi1, zvi2});
+                    m_mesh.triangles.push_back({zvi0, zvi2, zvi3});
+                } else {
+                    m_mesh.triangles.push_back({zvi0, zvi3, zvi2});
+                    m_mesh.triangles.push_back({zvi0, zvi2, zvi1});
                 }
             }
         }
     }
-
-    m_mesh.vertices.insert(m_mesh.vertices.end(), vertices.begin(), vertices.end());
-    m_mesh.triangles.insert(m_mesh.triangles.end(), triangles.begin(), triangles.end());
 }
 
 void VolumeVisualisation::calculateNormals() {
@@ -1284,6 +1304,7 @@ void VolumeVisualisation::cleanUpTriangleSoup() {
     const float epsilon = 0.01f;
     const float sqEpsilon = epsilon * epsilon;
 
+    // TODO might replace with map and < operator as discussed in the lecture
     std::unordered_map<std::tuple<int, int, int>, int, TupleHash> grid;
     std::vector<int> indexRemap(m_mesh.vertices.size());
     std::vector<glm::vec3> newVertices;
